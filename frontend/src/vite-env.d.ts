@@ -1,0 +1,10 @@
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_OVERSHOOT_API_KEY: string;
+  readonly VITE_WS_URL: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
