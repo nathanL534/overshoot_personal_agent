@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, Browser, Page, BrowserContext } from 'playwright';
 import { createInterface } from 'readline';
 import { config } from 'dotenv';
 import { captureDomSnapshot } from './services/domSnapshot.js';
@@ -9,7 +9,7 @@ import { executeAction, detectCaptcha, isRiskyIntent, isAllowedDomain } from './
 import { RunLogger, createRunId } from './services/logger.js';
 import { visionStore } from './services/visionStore.js';
 import { screenStreamer } from './services/screenStreamer.js';
-import type { AgentState, HistoryEntry, Action, CLIOptions } from './types/index.js';
+import type { AgentState, HistoryEntry, CLIOptions } from './types/index.js';
 
 config();
 
@@ -18,7 +18,8 @@ function parseArgs(): CLIOptions {
   const args = process.argv.slice(2);
   const options: CLIOptions = {
     goal: '',
-    url: undefined, // Optional - if not provided, user navigates manually
+    url: undefined,
+    connect: undefined,
     allowlist: (process.env.DOMAIN_ALLOWLIST || 'localhost,127.0.0.1').split(',').map(s => s.trim()),
     maxSteps: parseInt(process.env.MAX_STEPS || '40'),
   };
@@ -28,6 +29,8 @@ function parseArgs(): CLIOptions {
       options.goal = args[++i];
     } else if (args[i] === '--url' && args[i + 1]) {
       options.url = args[++i];
+    } else if (args[i] === '--connect' && args[i + 1]) {
+      options.connect = args[++i];
     } else if (args[i] === '--allowlist' && args[i + 1]) {
       options.allowlist = args[++i].split(',').map(s => s.trim());
     } else if (args[i] === '--maxSteps' && args[i + 1]) {
@@ -38,7 +41,20 @@ function parseArgs(): CLIOptions {
   // Goal is required
   if (!options.goal) {
     console.error('Error: --goal is required');
-    console.error('Usage: npm run agent -- --goal "your goal" [--url "http://..."] [--allowlist "domain1,domain2"] [--maxSteps 40]');
+    console.error('');
+    console.error('Usage:');
+    console.error('  # Connect to existing Chrome (recommended - aligns with Vision Bridge):');
+    console.error('  npm run agent -- --goal "your goal" --connect "http://localhost:9222"');
+    console.error('');
+    console.error('  # Launch new Playwright browser:');
+    console.error('  npm run agent -- --goal "your goal" [--url "http://..."]');
+    console.error('');
+    console.error('Options:');
+    console.error('  --goal        (required) Task for the agent');
+    console.error('  --connect     CDP endpoint to connect to existing Chrome');
+    console.error('  --url         URL to navigate to (only for non-connect mode)');
+    console.error('  --allowlist   Comma-separated allowed domains');
+    console.error('  --maxSteps    Maximum steps (default: 40)');
     process.exit(1);
   }
 
@@ -70,24 +86,34 @@ function log(step: number, message: string) {
   console.log(`[${timestamp}] Step ${step}: ${message}`);
 }
 
-async function runAgent(options: CLIOptions) {
-  const runId = createRunId();
-  const logger = new RunLogger(runId);
-  await logger.init();
+// Connect to existing Chrome browser via CDP
+async function connectToExistingBrowser(cdpEndpoint: string): Promise<{ browser: Browser; page: Page; context: BrowserContext }> {
+  console.log(`Connecting to browser at ${cdpEndpoint}...`);
 
-  console.log('='.repeat(60));
-  console.log('BROWSER AGENT');
-  console.log('='.repeat(60));
-  console.log(`Goal: ${options.goal}`);
-  console.log(`URL: ${options.url || '(manual navigation)'}`);
-  console.log(`Allowlist: ${options.allowlist.join(', ')}`);
-  console.log(`Max steps: ${options.maxSteps}`);
-  console.log(`Run log: ${logger.getRunDir()}`);
-  console.log('='.repeat(60));
-  console.log('');
+  const browser = await chromium.connectOverCDP(cdpEndpoint);
+  const contexts = browser.contexts();
 
-  // Launch browser headed
-  const browser: Browser = await chromium.launch({
+  if (contexts.length === 0) {
+    throw new Error('No browser contexts found. Make sure Chrome has at least one window open.');
+  }
+
+  const context = contexts[0];
+  const pages = context.pages();
+
+  if (pages.length === 0) {
+    throw new Error('No pages found. Make sure Chrome has at least one tab open.');
+  }
+
+  // Use the first/active page
+  const page = pages[0];
+  console.log(`Connected to page: ${page.url()}`);
+
+  return { browser, page, context };
+}
+
+// Launch a new Playwright browser
+async function launchNewBrowser(): Promise<{ browser: Browser; page: Page; context: BrowserContext }> {
+  const browser = await chromium.launch({
     headless: process.env.PLAYWRIGHT_HEADLESS === 'true',
   });
 
@@ -95,9 +121,9 @@ async function runAgent(options: CLIOptions) {
     viewport: { width: 1280, height: 800 },
   });
 
-  const page: Page = await context.newPage();
+  const page = await context.newPage();
 
-  // Add visual indicator so user knows which browser is being controlled
+  // Add visual indicator
   await context.addInitScript(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -122,70 +148,125 @@ async function runAgent(options: CLIOptions) {
     document.head.appendChild(style);
   });
 
-  // Agent state
-  const state: AgentState = {
-    goal: options.goal,
-    currentStep: 0,
-    maxSteps: options.maxSteps,
-    history: [],
-    stuckCounter: 0,
-    lastDomHash: '',
-    running: true,
-  };
+  return { browser, page, context };
+}
+
+async function runAgent(options: CLIOptions) {
+  const runId = createRunId();
+  const logger = new RunLogger(runId);
+  await logger.init();
+
+  const isConnectMode = !!options.connect;
+
+  console.log('='.repeat(60));
+  console.log('BROWSER AGENT');
+  console.log('='.repeat(60));
+  console.log(`Mode: ${isConnectMode ? 'CONNECT to existing browser' : 'Launch new browser'}`);
+  console.log(`Goal: ${options.goal}`);
+  if (isConnectMode) {
+    console.log(`CDP Endpoint: ${options.connect}`);
+  } else {
+    console.log(`URL: ${options.url || '(manual navigation)'}`);
+  }
+  console.log(`Allowlist: ${options.allowlist.join(', ')}`);
+  console.log(`Max steps: ${options.maxSteps}`);
+  console.log(`Run log: ${logger.getRunDir()}`);
+  console.log('='.repeat(60));
+  console.log('');
+
+  let browser: Browser;
+  let page: Page;
+  let context: BrowserContext;
+  let ownsBrowser = true; // Whether we should close the browser on exit
 
   try {
-    // Start screen streaming to frontend
-    screenStreamer.setPage(page);
-    screenStreamer.start();
-    log(0, 'Screen streaming started - open Vision Bridge to view');
-
-    // Navigation: either go to provided URL or wait for user to navigate manually
-    if (options.url) {
-      // URL provided - navigate to it
-      log(0, `Navigating to ${options.url}`);
-      await page.goto(options.url, { waitUntil: 'domcontentloaded' });
-    } else {
-      // No URL - manual navigation flow
-      log(0, 'Opening blank page for manual navigation');
-      await page.goto('about:blank');
+    if (isConnectMode) {
+      // Connect to existing browser
+      const connected = await connectToExistingBrowser(options.connect!);
+      browser = connected.browser;
+      page = connected.page;
+      context = connected.context;
+      ownsBrowser = false; // Don't close user's browser
 
       console.log('');
       console.log('='.repeat(60));
-      console.log('MANUAL NAVIGATION MODE');
+      console.log('CONNECTED TO YOUR BROWSER');
       console.log('='.repeat(60));
       console.log('');
-      console.log('The Playwright browser is now open.');
-      console.log('Please navigate to the page where you want the agent to operate.');
+      console.log('The agent is now connected to your existing Chrome browser.');
+      console.log(`Current page: ${page.url()}`);
       console.log('');
-      console.log('When ready, press Enter to continue...');
+      console.log('Make sure Vision Bridge is capturing this same Chrome window!');
+      console.log('');
+      console.log('Press Enter to start the agent...');
       console.log('');
 
       await waitForUserInput('');
+    } else {
+      // Launch new browser
+      const launched = await launchNewBrowser();
+      browser = launched.browser;
+      page = launched.page;
+      context = launched.context;
 
-      // Get the current URL after user navigation
-      const currentUrl = page.url();
-      log(0, `User navigated to: ${currentUrl}`);
-
-      // Check domain allowlist
-      if (currentUrl && currentUrl !== 'about:blank') {
-        if (!isAllowedDomain(currentUrl, options.allowlist)) {
-          const hostname = new URL(currentUrl).hostname;
-          console.log('');
-          const approved = await askUser(`Domain not in allowlist: ${hostname}. Approve?`);
-          if (!approved) {
-            console.log('Domain not approved. Exiting.');
-            await browser.close();
-            rl.close();
-            return;
-          }
-          // Add to allowlist for this session
-          options.allowlist.push(hostname);
-          log(0, `Added ${hostname} to session allowlist`);
-        }
+      // Handle navigation
+      if (options.url) {
+        log(0, `Navigating to ${options.url}`);
+        await page.goto(options.url, { waitUntil: 'domcontentloaded' });
       } else {
-        console.log('Warning: Still on about:blank. The agent will wait for a proper page.');
+        log(0, 'Opening blank page for manual navigation');
+        await page.goto('about:blank');
+
+        console.log('');
+        console.log('='.repeat(60));
+        console.log('MANUAL NAVIGATION MODE');
+        console.log('='.repeat(60));
+        console.log('');
+        console.log('The Playwright browser is now open.');
+        console.log('Please navigate to the page where you want the agent to operate.');
+        console.log('');
+        console.log('When ready, press Enter to continue...');
+        console.log('');
+
+        await waitForUserInput('');
       }
     }
+
+    // Check domain allowlist for current page
+    const currentUrl = page.url();
+    log(0, `Starting on: ${currentUrl}`);
+
+    if (currentUrl && currentUrl !== 'about:blank') {
+      if (!isAllowedDomain(currentUrl, options.allowlist)) {
+        const hostname = new URL(currentUrl).hostname;
+        console.log('');
+        const approved = await askUser(`Domain not in allowlist: ${hostname}. Approve?`);
+        if (!approved) {
+          console.log('Domain not approved. Exiting.');
+          if (ownsBrowser) await browser.close();
+          rl.close();
+          return;
+        }
+        options.allowlist.push(hostname);
+        log(0, `Added ${hostname} to session allowlist`);
+      }
+    }
+
+    // Agent state
+    const state: AgentState = {
+      goal: options.goal,
+      currentStep: 0,
+      maxSteps: options.maxSteps,
+      history: [],
+      stuckCounter: 0,
+      lastDomHash: '',
+      running: true,
+    };
+
+    // Start screen streaming (even in connect mode, for logging)
+    screenStreamer.setPage(page);
+    screenStreamer.start();
+    log(0, 'Screen streaming started');
 
     // Main agent loop
     while (state.running && state.currentStep < state.maxSteps) {
@@ -332,11 +413,6 @@ async function runAgent(options: CLIOptions) {
     if (state.currentStep >= state.maxSteps) {
       log(state.currentStep, 'Max steps reached');
     }
-  } catch (error) {
-    console.error('Agent error:', error);
-  } finally {
-    // Stop screen streaming
-    screenStreamer.stop();
 
     // Write final summary
     await logger.writeFinalSummary(
@@ -346,12 +422,22 @@ async function runAgent(options: CLIOptions) {
       state.history.some(h => h.action.done)
     );
 
+  } catch (error) {
+    console.error('Agent error:', error);
+  } finally {
+    // Stop screen streaming
+    screenStreamer.stop();
+
     console.log('');
     console.log('='.repeat(60));
     console.log(`Run completed. Logs: ${logger.getRunDir()}`);
     console.log('='.repeat(60));
 
-    await browser.close();
+    if (ownsBrowser) {
+      await browser!.close();
+    } else {
+      console.log('(Browser left open - you can continue using it)');
+    }
     rl.close();
   }
 }

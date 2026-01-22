@@ -40,24 +40,52 @@ A local browser automation agent controlled from the terminal, using Claude (pla
 
 **Flow:** Playwright screenshots → WebSocket → Frontend canvas → Overshoot analysis → Vision snapshots → Backend
 
-## Quick Start
+## Quick Start (Unified Workflow)
+
+The recommended workflow connects the agent to your existing Chrome browser so that **Overshoot sees exactly what the agent controls**.
+
+### Step 1: Start Chrome with Remote Debugging
 
 ```bash
-# 1. Install dependencies
-npm run install:all
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
 
-# 2. Set up environment files
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
+# Linux
+google-chrome --remote-debugging-port=9222
 
-# 3. Edit .env files with your API keys
-
-# 4. Start development servers (backend + frontend)
-npm run dev
-
-# 5. In another terminal, run the agent
-npm run agent -- --goal "Fill the form with dummy data and stop before submit."
+# Windows
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
 ```
+
+### Step 2: Navigate to Your Target Page
+
+In the Chrome window that opened, navigate to whatever page you want the agent to work on.
+
+### Step 3: Start the Backend & Frontend
+
+```bash
+cd overshoot_personal_agent
+npm run install:all
+npm run dev
+```
+
+### Step 4: Set Up Vision Bridge
+
+1. Open http://localhost:5173 (Vision Bridge)
+2. Enter your Overshoot API key
+3. Select **"Pick Window/Tab"** mode
+4. Click **"Click to Pick Window"**
+5. **Select the Chrome window** from Step 1 in the picker
+
+Now Overshoot is watching your Chrome browser.
+
+### Step 5: Run the Agent (Connected Mode)
+
+```bash
+npm run agent -- --goal "Fill the form with test data" --connect "http://localhost:9222"
+```
+
+The agent connects to **the same Chrome** that Overshoot is watching. Vision and execution are now aligned!
 
 ## Ports & URLs
 
@@ -83,23 +111,35 @@ The agent automatically streams Playwright browser screenshots to the Vision Bri
 
 ## Perception Alignment
 
-For the agent's vision (what it sees) to match its actions (what it controls), you must ensure the Vision Bridge is capturing the same browser the agent is controlling.
+For the agent's vision (what Overshoot sees) to match its actions (what the agent controls), they must be looking at the **same browser window**.
 
-### Pick Window Mode (Recommended)
+### Connect Mode (Best Alignment)
+
+The `--connect` flag ensures perfect alignment:
+
+1. Start Chrome with remote debugging: `--remote-debugging-port=9222`
+2. Navigate to your target page in that Chrome
+3. In Vision Bridge, pick that Chrome window
+4. Run agent with: `--connect "http://localhost:9222"`
+
+Now Overshoot watches the exact same Chrome window the agent controls.
+
+### Standalone Mode (Manual Alignment)
+
+If using standalone mode (no `--connect`), you must pick the Playwright window:
 
 1. Start the agent: `npm run agent -- --goal "your goal"`
-2. Open Vision Bridge at http://localhost:5173
-3. Select **"Pick Window/Tab"** mode
+2. A Playwright Chromium window opens (orange "BROWSER AGENT" banner)
+3. In Vision Bridge, select **"Pick Window/Tab"** mode
 4. Click **"Click to Pick Window"**
-5. In the picker dialog, select the **Playwright Chromium window** (the one with the orange "BROWSER AGENT" banner)
-6. Now the Vision Bridge sees the same page the agent is controlling
+5. Select the Playwright Chromium window in the picker
 
 ### Camera Mode (Alternative)
 
-Use OBS Virtual Camera to capture the Playwright window:
+Use OBS Virtual Camera to capture the browser window:
 
 1. Open OBS Studio
-2. Add a Window Capture source pointing to the Playwright Chromium window
+2. Add a Window Capture source pointing to your browser
 3. Start Virtual Camera in OBS
 4. In Vision Bridge, select **"Live Camera"** mode
 5. Choose "OBS Virtual Camera" when prompted
@@ -111,41 +151,50 @@ If you want to use a physical camera or capture something other than Playwright:
 ## CLI Usage
 
 ```bash
-# Run with manual navigation (no URL - navigate in the browser yourself)
-npm run agent -- --goal "Fill the form with dummy data and stop before submit."
+# RECOMMENDED: Connect to existing Chrome (aligns vision with execution)
+npm run agent -- --goal "Fill the form" --connect "http://localhost:9222"
 
-# Run with a specific URL
+# Alternative: Launch new Playwright browser with URL
 npm run agent -- --goal "Fill the form" --url "http://localhost:3001/demo"
 
+# Alternative: Launch new Playwright browser, navigate manually
+npm run agent -- --goal "Fill the form"
+
 # Extended allowlist
-npm run agent -- --goal "Search for something" --allowlist "localhost,127.0.0.1,google.com"
+npm run agent -- --goal "Search for something" --connect "http://localhost:9222" --allowlist "localhost,google.com"
 
 # Limit steps
-npm run agent -- --goal "Complete the task" --maxSteps 20
+npm run agent -- --goal "Complete the task" --connect "http://localhost:9222" --maxSteps 20
 ```
 
-### Manual Navigation Mode
+### Connect Mode (Recommended)
 
-When you run the agent **without** `--url`, it opens a blank Playwright browser and waits for you to navigate:
+Use `--connect` to connect the agent to your existing Chrome browser:
 
-1. Run: `npm run agent -- --goal "your goal"`
-2. A Playwright Chromium browser opens (blank page)
-3. Manually navigate to the page you want the agent to operate on
-4. Press Enter in the terminal when ready
-5. If the domain is not in the allowlist, you'll be prompted to approve it
-6. The agent begins executing your goal on the current page
+1. Start Chrome with `--remote-debugging-port=9222`
+2. Navigate to your target page
+3. In Vision Bridge, pick that Chrome window
+4. Run: `npm run agent -- --goal "your goal" --connect "http://localhost:9222"`
+5. Agent controls the same page Overshoot is watching
 
-This is useful when you want to:
-- Log into a site manually before the agent takes over
-- Navigate to a specific page state
-- Test the agent on any arbitrary website
+**This is the recommended mode** because vision (Overshoot) and execution (agent) are perfectly aligned.
+
+### Standalone Mode (Alternative)
+
+Without `--connect`, the agent launches its own Playwright browser:
+
+- With `--url`: Navigates directly to that URL
+- Without `--url`: Opens blank page, you navigate manually, press Enter
+
+In standalone mode, you'd need to pick the Playwright window in Vision Bridge to align perception.
 
 ### CLI Arguments
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--goal` | Yes | - | Task for the agent to accomplish |
-| `--url` | No | (manual navigation) | Starting URL. If omitted, user navigates manually |
+| `--connect` | No | - | CDP endpoint to connect to existing Chrome |
+| `--url` | No | - | Starting URL (only for standalone mode) |
 | `--allowlist` | No | localhost,127.0.0.1 | Comma-separated allowed domains |
 | `--maxSteps` | No | 40 | Maximum steps before stopping |
 

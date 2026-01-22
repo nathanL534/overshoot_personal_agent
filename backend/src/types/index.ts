@@ -94,6 +94,7 @@ export interface AgentState {
 export interface CLIOptions {
   goal: string;
   url?: string; // Optional - if not provided, user navigates manually
+  connect?: string; // CDP endpoint to connect to existing browser (e.g., http://localhost:9222)
   allowlist: string[];
   maxSteps: number;
 }
