@@ -81,6 +81,29 @@ The agent automatically streams Playwright browser screenshots to the Vision Bri
 
 **No OBS required!** Screenshots flow directly: Playwright → WebSocket → Frontend → Overshoot
 
+## Perception Alignment
+
+For the agent's vision (what it sees) to match its actions (what it controls), you must ensure the Vision Bridge is capturing the same browser the agent is controlling.
+
+### Pick Window Mode (Recommended)
+
+1. Start the agent: `npm run agent -- --goal "your goal"`
+2. Open Vision Bridge at http://localhost:5173
+3. Select **"Pick Window/Tab"** mode
+4. Click **"Click to Pick Window"**
+5. In the picker dialog, select the **Playwright Chromium window** (the one with the orange "BROWSER AGENT" banner)
+6. Now the Vision Bridge sees the same page the agent is controlling
+
+### Camera Mode (Alternative)
+
+Use OBS Virtual Camera to capture the Playwright window:
+
+1. Open OBS Studio
+2. Add a Window Capture source pointing to the Playwright Chromium window
+3. Start Virtual Camera in OBS
+4. In Vision Bridge, select **"Live Camera"** mode
+5. Choose "OBS Virtual Camera" when prompted
+
 ## OBS Virtual Camera Setup (Optional - For Physical Camera)
 
 If you want to use a physical camera or capture something other than Playwright:
@@ -88,30 +111,43 @@ If you want to use a physical camera or capture something other than Playwright:
 ## CLI Usage
 
 ```bash
-# Run with default demo form
-npm run agent
+# Run with manual navigation (no URL - navigate in the browser yourself)
+npm run agent -- --goal "Fill the form with dummy data and stop before submit."
 
-# Custom goal
-npm run agent -- --goal "Navigate to the form and fill in the name field with 'John Doe'"
-
-# Custom URL
-npm run agent -- --demoUrl "http://localhost:3001/demo" --goal "Fill the form"
+# Run with a specific URL
+npm run agent -- --goal "Fill the form" --url "http://localhost:3001/demo"
 
 # Extended allowlist
-npm run agent -- --allowlist "localhost,127.0.0.1,example.com"
+npm run agent -- --goal "Search for something" --allowlist "localhost,127.0.0.1,google.com"
 
 # Limit steps
-npm run agent -- --maxSteps 20
+npm run agent -- --goal "Complete the task" --maxSteps 20
 ```
+
+### Manual Navigation Mode
+
+When you run the agent **without** `--url`, it opens a blank Playwright browser and waits for you to navigate:
+
+1. Run: `npm run agent -- --goal "your goal"`
+2. A Playwright Chromium browser opens (blank page)
+3. Manually navigate to the page you want the agent to operate on
+4. Press Enter in the terminal when ready
+5. If the domain is not in the allowlist, you'll be prompted to approve it
+6. The agent begins executing your goal on the current page
+
+This is useful when you want to:
+- Log into a site manually before the agent takes over
+- Navigate to a specific page state
+- Test the agent on any arbitrary website
 
 ### CLI Arguments
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--goal` | "Fill the form with dummy data and stop before submit." | Task for the agent |
-| `--demoUrl` | http://localhost:3001/demo | Starting URL |
-| `--allowlist` | localhost,127.0.0.1 | Allowed domains |
-| `--maxSteps` | 40 | Maximum steps |
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--goal` | Yes | - | Task for the agent to accomplish |
+| `--url` | No | (manual navigation) | Starting URL. If omitted, user navigates manually |
+| `--allowlist` | No | localhost,127.0.0.1 | Comma-separated allowed domains |
+| `--maxSteps` | No | 40 | Maximum steps before stopping |
 
 ## Environment Variables
 
@@ -269,12 +305,15 @@ browser-agent/
 
 ⚠️ **HACKATHON DEMO ONLY**
 
-The Overshoot API key is exposed in client-side code. This is intentional for demo purposes.
+**The Overshoot API key in the frontend is client-exposed.** This is intentional for hackathon/demo purposes only.
+
+The key is set in `frontend/.env` as `VITE_OVERSHOOT_API_KEY` and is bundled into the client-side JavaScript. Anyone viewing the page source can extract it.
 
 **DO NOT:**
 - Use production API keys
 - Deploy this to public servers
 - Commit real API keys to version control
+- Share the built frontend bundle publicly
 
 ## License
 

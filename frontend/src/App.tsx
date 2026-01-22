@@ -33,10 +33,11 @@ function App() {
   }, [sendSnapshot]);
 
   // Handle frames from screen share (pick mode)
+  // Only draws to canvas - real VisionSnapshots come from useVision via handleSnapshot
   const handlePickFrame = useCallback((imageData: string) => {
     setPickFrameCount((c) => c + 1);
 
-    // Draw to preview canvas
+    // Draw to preview canvas (useVision reads from this canvas in screen mode)
     const canvas = pickPreviewRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -50,21 +51,10 @@ function App() {
         img.src = imageData;
       }
     }
-
-    // Send frame to backend as vision snapshot
-    // Extract base64 data (remove data:image/jpeg;base64, prefix)
-    const base64 = imageData.split(',')[1];
-    if (base64) {
-      // Send as a simple snapshot - Overshoot will analyze via canvas
-      const snapshot: VisionSnapshot = {
-        timestamp: Date.now(),
-        summaryText: `[Screen capture frame ${pickFrameCount + 1}]`,
-        detectedTextSnippets: [],
-        raw: { frame: base64, type: 'screen_share' },
-      };
-      sendSnapshot(snapshot);
-    }
-  }, [sendSnapshot, pickFrameCount]);
+    // NOTE: Do NOT send snapshots here. Real VisionSnapshots are produced by
+    // useVision (Overshoot RealtimeVision) which reads the canvas and sends
+    // analyzed results via the onSnapshot callback (handleSnapshot).
+  }, []);
 
   const {
     sharing: pickSharing,
@@ -328,7 +318,9 @@ function App() {
 
           {mode === 'pick' && !pickSharing && (
             <div className="info-box">
-              <strong>Pick Window Mode:</strong> Click the button above, then select any browser tab or window from the picker. The agent will see whatever you select.
+              <strong>Pick Window Mode:</strong> Click the button above, then select any browser tab or window from the picker.
+              <br /><br />
+              <strong>Perception Alignment:</strong> To align vision with agent execution, pick the <em>Playwright Chromium window</em> that the agent controls.
             </div>
           )}
 

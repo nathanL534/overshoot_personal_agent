@@ -93,7 +93,7 @@ export interface AgentState {
 // CLI options
 export interface CLIOptions {
   goal: string;
-  demoUrl: string;
+  url?: string; // Optional - if not provided, user navigates manually
   allowlist: string[];
   maxSteps: number;
 }

@@ -17,8 +17,8 @@ config();
 function parseArgs(): CLIOptions {
   const args = process.argv.slice(2);
   const options: CLIOptions = {
-    goal: 'Fill the form with dummy data and stop before submit.',
-    demoUrl: `http://localhost:${process.env.BACKEND_PORT || '3001'}/demo`,
+    goal: '',
+    url: undefined, // Optional - if not provided, user navigates manually
     allowlist: (process.env.DOMAIN_ALLOWLIST || 'localhost,127.0.0.1').split(',').map(s => s.trim()),
     maxSteps: parseInt(process.env.MAX_STEPS || '40'),
   };
@@ -26,13 +26,20 @@ function parseArgs(): CLIOptions {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--goal' && args[i + 1]) {
       options.goal = args[++i];
-    } else if (args[i] === '--demoUrl' && args[i + 1]) {
-      options.demoUrl = args[++i];
+    } else if (args[i] === '--url' && args[i + 1]) {
+      options.url = args[++i];
     } else if (args[i] === '--allowlist' && args[i + 1]) {
       options.allowlist = args[++i].split(',').map(s => s.trim());
     } else if (args[i] === '--maxSteps' && args[i + 1]) {
       options.maxSteps = parseInt(args[++i]);
     }
+  }
+
+  // Goal is required
+  if (!options.goal) {
+    console.error('Error: --goal is required');
+    console.error('Usage: npm run agent -- --goal "your goal" [--url "http://..."] [--allowlist "domain1,domain2"] [--maxSteps 40]');
+    process.exit(1);
   }
 
   return options;
@@ -72,7 +79,7 @@ async function runAgent(options: CLIOptions) {
   console.log('BROWSER AGENT');
   console.log('='.repeat(60));
   console.log(`Goal: ${options.goal}`);
-  console.log(`Start URL: ${options.demoUrl}`);
+  console.log(`URL: ${options.url || '(manual navigation)'}`);
   console.log(`Allowlist: ${options.allowlist.join(', ')}`);
   console.log(`Max steps: ${options.maxSteps}`);
   console.log(`Run log: ${logger.getRunDir()}`);
@@ -132,9 +139,53 @@ async function runAgent(options: CLIOptions) {
     screenStreamer.start();
     log(0, 'Screen streaming started - open Vision Bridge to view');
 
-    // Navigate to start URL
-    log(0, `Navigating to ${options.demoUrl}`);
-    await page.goto(options.demoUrl, { waitUntil: 'domcontentloaded' });
+    // Navigation: either go to provided URL or wait for user to navigate manually
+    if (options.url) {
+      // URL provided - navigate to it
+      log(0, `Navigating to ${options.url}`);
+      await page.goto(options.url, { waitUntil: 'domcontentloaded' });
+    } else {
+      // No URL - manual navigation flow
+      log(0, 'Opening blank page for manual navigation');
+      await page.goto('about:blank');
+
+      console.log('');
+      console.log('='.repeat(60));
+      console.log('MANUAL NAVIGATION MODE');
+      console.log('='.repeat(60));
+      console.log('');
+      console.log('The Playwright browser is now open.');
+      console.log('Please navigate to the page where you want the agent to operate.');
+      console.log('');
+      console.log('When ready, press Enter to continue...');
+      console.log('');
+
+      await waitForUserInput('');
+
+      // Get the current URL after user navigation
+      const currentUrl = page.url();
+      log(0, `User navigated to: ${currentUrl}`);
+
+      // Check domain allowlist
+      if (currentUrl && currentUrl !== 'about:blank') {
+        if (!isAllowedDomain(currentUrl, options.allowlist)) {
+          const hostname = new URL(currentUrl).hostname;
+          console.log('');
+          const approved = await askUser(`Domain not in allowlist: ${hostname}. Approve?`);
+          if (!approved) {
+            console.log('Domain not approved. Exiting.');
+            await browser.close();
+            rl.close();
+            return;
+          }
+          // Add to allowlist for this session
+          options.allowlist.push(hostname);
+          log(0, `Added ${hostname} to session allowlist`);
+        }
+      } else {
+        console.log('Warning: Still on about:blank. The agent will wait for a proper page.');
+      }
+    }
 
     // Main agent loop
     while (state.running && state.currentStep < state.maxSteps) {

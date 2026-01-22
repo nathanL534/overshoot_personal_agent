@@ -39,9 +39,7 @@ export function useScreenShare({ onFrame, intervalMs = 3000 }: UseScreenSharePro
 
       // Request screen/window share - browser shows picker
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-        },
+        video: true,
         audio: false,
       });
 
