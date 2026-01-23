@@ -1,4 +1,3 @@
-// Vision Snapshot sent to backend
 export interface VisionSnapshot {
   timestamp: number;
   summaryText: string;
@@ -6,33 +5,23 @@ export interface VisionSnapshot {
   raw?: unknown;
 }
 
-// WebSocket messages
 export interface VisionEvent {
   type: 'vision_snapshot';
   payload: VisionSnapshot;
 }
 
-export interface ControlEvent {
-  type: 'user_response';
+export interface StatusEvent {
+  type: 'status';
   payload: {
-    approved: boolean;
-    text?: string;
+    connected: boolean;
+    lastSnapshotAt?: number;
+    agentState?: string;
+    step?: number;
   };
 }
 
-export interface LogEvent {
-  type: 'log';
-  payload: {
-    level: 'info' | 'warn' | 'error';
-    message: string;
-    data?: unknown;
-  };
-}
+export type VisionMode = 'screen' | 'camera' | 'video';
 
-// Vision mode
-export type VisionMode = 'camera' | 'video';
-
-// Overshoot SDK types (partial, for our use)
 export interface OvershootResult {
   response?: string;
   text?: string;

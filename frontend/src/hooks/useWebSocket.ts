@@ -1,12 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { VisionSnapshot, LogEvent } from '../types';
+import type { VisionSnapshot, StatusEvent } from '../types';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001/ws';
 
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [logs, setLogs] = useState<LogEvent['payload'][]>([]);
+  const [status, setStatus] = useState<StatusEvent['payload'] | null>(null);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -22,7 +22,6 @@ export function useWebSocket() {
     ws.onclose = () => {
       console.log('[WS] Disconnected');
       setConnected(false);
-      // Reconnect after 2s
       setTimeout(connect, 2000);
     };
 
@@ -33,8 +32,8 @@ export function useWebSocket() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-          setLogs((prev) => [...prev.slice(-49), data.payload]);
+        if (data.type === 'status') {
+          setStatus(data.payload);
         }
       } catch (e) {
         console.error('[WS] Parse error:', e);
@@ -46,22 +45,13 @@ export function useWebSocket() {
 
   const sendSnapshot = useCallback((snapshot: VisionSnapshot) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) {
-      console.warn('[WS] Not connected, cannot send snapshot');
+      console.warn('[WS] Not connected');
       return;
     }
 
     wsRef.current.send(JSON.stringify({
       type: 'vision_snapshot',
       payload: snapshot,
-    }));
-  }, []);
-
-  const sendUserResponse = useCallback((approved: boolean, text?: string) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-
-    wsRef.current.send(JSON.stringify({
-      type: 'user_response',
-      payload: { approved, text },
     }));
   }, []);
 
@@ -72,5 +62,5 @@ export function useWebSocket() {
     };
   }, [connect]);
 
-  return { connected, logs, sendSnapshot, sendUserResponse };
+  return { connected, status, sendSnapshot };
 }

@@ -1,214 +1,192 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { RealtimeVision } from '@overshoot/sdk';
-import type { VisionSnapshot, VisionMode, OvershootResult } from '../types';
+import type { VisionSnapshot, VisionMode } from '../types';
 
 const API_URL = 'https://cluster1.overshoot.ai/api/v0.2';
-const VISION_PROMPT = 'Describe what you see on this screen. Read any visible text including form labels, button text, headings, and status messages. Identify UI elements like buttons, input fields, dropdowns, and checkboxes. Note their current state (filled/empty, checked/unchecked, selected values).';
+const VISION_PROMPT = 'Continuously summarize what is on screen. Extract visible text, UI elements, buttons, dialogs, errors. Be concise.';
+const CAPTURE_INTERVAL = 3000; // 3 seconds between captures
 
 interface UseVisionProps {
   apiKey: string;
-  mode: VisionMode | 'screen';
+  mode: VisionMode;
   videoFile: File | null;
-  cameraFacing: 'user' | 'environment';
-  canvasRef?: React.RefObject<HTMLCanvasElement>;
+  deviceId: string | null;
   onSnapshot: (snapshot: VisionSnapshot) => void;
 }
 
-export function useVision({ apiKey, mode, videoFile, cameraFacing, canvasRef, onSnapshot }: UseVisionProps) {
+export function useVision({ apiKey, mode, videoFile, deviceId, onSnapshot }: UseVisionProps) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<string>('');
-  const visionRef = useRef<RealtimeVision | null>(null);
-  const syntheticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const screenCaptureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastUpdateRef = useRef<number>(0);
+  const [deviceName, setDeviceName] = useState<string>('');
 
-  // Process Overshoot result into VisionSnapshot
-  const processResult = useCallback((result: OvershootResult) => {
-    lastUpdateRef.current = Date.now();
+  const streamRef = useRef<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    // Extract text from result
-    const responseText = result.response || result.text || '';
-    const summaryText = typeof responseText === 'string'
-      ? responseText.slice(0, 500)
-      : JSON.stringify(responseText).slice(0, 500);
+  const captureAndAnalyze = useCallback(async () => {
+    if (!videoRef.current || !canvasRef.current || !apiKey) return;
 
-    // Extract text snippets (simple heuristic)
-    const snippets: string[] = [];
-    if (typeof responseText === 'string') {
-      // Extract quoted strings or capitalized words
-      const matches = responseText.match(/"[^"]+"|'[^']+'|\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g);
-      if (matches) {
-        snippets.push(...matches.slice(0, 10).map(s => s.replace(/['"]/g, '')));
-      }
-    }
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
 
-    const snapshot: VisionSnapshot = {
-      timestamp: Date.now(),
-      summaryText,
-      detectedTextSnippets: snippets,
-      raw: result,
-    };
+    // Set canvas size to match video
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
 
-    setLastResult(summaryText);
-    onSnapshot(snapshot);
-  }, [onSnapshot]);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  // Send synthetic snapshot when vision not streaming
-  const sendSyntheticSnapshot = useCallback(() => {
-    const timeSinceUpdate = Date.now() - lastUpdateRef.current;
-    if (timeSinceUpdate > 3000 && visionRef.current) {
-      const snapshot: VisionSnapshot = {
-        timestamp: Date.now(),
-        summaryText: '[vision not streaming]',
-        detectedTextSnippets: [`visionKeys: ${Object.keys(visionRef.current).join(',')}`],
-      };
-      onSnapshot(snapshot);
-    }
-  }, [onSnapshot]);
+    // Draw current frame
+    ctx.drawImage(video, 0, 0);
 
-  // Capture canvas to video file and send to Overshoot
-  const captureCanvasToVideo = useCallback(async () => {
-    const canvas = canvasRef?.current;
-    if (!canvas || !apiKey) return;
+    // Convert to base64
+    const imageData = canvas.toDataURL('image/jpeg', 0.8);
+    const base64Image = imageData.split(',')[1];
 
     try {
-      // Create a blob from canvas
-      const blob = await new Promise<Blob | null>((resolve) => {
-        canvas.toBlob(resolve, 'image/jpeg', 0.8);
+      // Send to Overshoot API
+      const response = await fetch(`${API_URL}/vision`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          image: base64Image,
+          prompt: VISION_PROMPT,
+        }),
       });
 
-      if (!blob) return;
-
-      // Convert to File (Overshoot expects a video file, but we'll try with image)
-      // For proper video, we'd need to use MediaRecorder, but for hackathon
-      // we'll create a new vision instance per frame batch
-
-      // Actually, let's just send images directly if the SDK supports it
-      // or create a minimal webm video from the canvas
-
-      // For now, create a simple approach: restart vision with captured frame
-      // This is hacky but works for demo
-
-      const file = new File([blob], 'screen-capture.jpg', { type: 'image/jpeg' });
-
-      // Stop existing vision
-      if (visionRef.current && typeof visionRef.current.stop === 'function') {
-        visionRef.current.stop();
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
       }
 
-      // Create new vision with captured frame
-      // Note: Overshoot may not accept single images, so we'll create a minimal video
-      const newVision = new RealtimeVision({
-        apiUrl: API_URL,
-        apiKey,
-        prompt: VISION_PROMPT,
-        source: { type: 'video', file },
-        onResult: (result: OvershootResult) => {
-          console.log('[Vision] Screen result:', result);
-          processResult(result);
-        },
-        onError: (err: Error) => {
-          console.error('[Vision] Screen error:', err);
-          // Don't set error state, just log - we'll retry
-        },
-      });
+      const result = await response.json();
+      const responseText = result.response || result.text || JSON.stringify(result);
+      const summaryText = typeof responseText === 'string'
+        ? responseText.slice(0, 1000)
+        : JSON.stringify(responseText).slice(0, 1000);
 
-      if (typeof newVision.start === 'function') {
-        newVision.start();
-      }
+      setLastResult(summaryText);
 
-      visionRef.current = newVision;
+      const snapshot: VisionSnapshot = {
+        timestamp: Date.now(),
+        summaryText,
+        detectedTextSnippets: [],
+        raw: result,
+      };
+
+      onSnapshot(snapshot);
     } catch (err) {
-      console.error('[Vision] Canvas capture error:', err);
+      console.error('[Vision] API error:', err);
+      // Don't set error state for transient API issues, just log
     }
-  }, [canvasRef, apiKey, processResult]);
+  }, [apiKey, onSnapshot]);
 
-  const start = useCallback(() => {
+  const start = useCallback(async () => {
     if (running || !apiKey) return;
-
     setError(null);
 
     try {
+      let stream: MediaStream;
+
       if (mode === 'screen') {
-        // Screen mode: capture canvas periodically and send to Overshoot
-        console.log('[Vision] Starting screen capture mode');
+        // Screen capture - browser will show picker
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            displaySurface: 'monitor',
+          },
+          audio: false,
+        });
+        const track = stream.getVideoTracks()[0];
+        setDeviceName(track?.label || 'Screen');
+
+        // Handle user stopping share via browser UI
+        track.onended = () => {
+          stop();
+        };
+      } else if (mode === 'video' && videoFile) {
+        // Video file mode - create object URL
+        const video = document.createElement('video');
+        video.src = URL.createObjectURL(videoFile);
+        video.muted = true;
+        video.loop = true;
+        await video.play();
+        videoRef.current = video;
+        setDeviceName(videoFile.name);
+
+        // Create canvas for frame capture
+        canvasRef.current = document.createElement('canvas');
+
+        // Start capture interval
+        intervalRef.current = setInterval(captureAndAnalyze, CAPTURE_INTERVAL);
         setRunning(true);
-        lastUpdateRef.current = Date.now();
-
-        // Capture every 3 seconds (matches backend)
-        screenCaptureIntervalRef.current = setInterval(captureCanvasToVideo, 3000);
-        // Initial capture
-        captureCanvasToVideo();
-
-        // Synthetic fallback
-        syntheticIntervalRef.current = setInterval(sendSyntheticSnapshot, 1000);
         return;
-      }
-
-      // Camera or video file mode
-      let source: { type: 'camera'; cameraFacing: 'user' | 'environment' } | { type: 'video'; file: File };
-
-      if (mode === 'video' && videoFile) {
-        source = { type: 'video', file: videoFile };
+      } else if (mode === 'camera' && deviceId) {
+        // Camera mode with specific device
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: deviceId } },
+        });
+        const track = stream.getVideoTracks()[0];
+        setDeviceName(track?.label || 'Camera');
       } else {
-        source = { type: 'camera', cameraFacing };
+        throw new Error('Invalid mode or missing configuration');
       }
 
-      console.log('[Vision] Starting with source:', source.type);
+      streamRef.current = stream;
 
-      const vision = new RealtimeVision({
-        apiUrl: API_URL,
-        apiKey,
-        prompt: VISION_PROMPT,
-        source,
-        onResult: (result: OvershootResult) => {
-          console.log('[Vision] Result:', result);
-          processResult(result);
-        },
-        onError: (err: Error) => {
-          console.error('[Vision] Error:', err);
-          setError(err.message);
-        },
-      });
+      // Create hidden video element
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+      videoRef.current = video;
 
-      // Start processing
-      if (typeof vision.start === 'function') {
-        vision.start();
-      }
+      // Create canvas for frame capture
+      canvasRef.current = document.createElement('canvas');
 
-      visionRef.current = vision;
+      // Start capture interval
+      intervalRef.current = setInterval(captureAndAnalyze, CAPTURE_INTERVAL);
+
+      // Capture first frame immediately
+      setTimeout(captureAndAnalyze, 500);
+
       setRunning(true);
-      lastUpdateRef.current = Date.now();
-
-      // Start synthetic snapshot interval
-      syntheticIntervalRef.current = setInterval(sendSyntheticSnapshot, 1000);
-
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start vision');
+      const message = err instanceof Error ? err.message : 'Failed to start capture';
+      setError(message);
+      console.error('[Vision] Start error:', err);
     }
-  }, [running, apiKey, mode, videoFile, cameraFacing, processResult, sendSyntheticSnapshot, captureCanvasToVideo]);
+  }, [running, apiKey, mode, videoFile, deviceId, captureAndAnalyze]);
 
   const stop = useCallback(() => {
-    if (visionRef.current) {
-      if (typeof visionRef.current.stop === 'function') {
-        visionRef.current.stop();
+    // Stop interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    // Stop stream tracks
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    // Clean up video element
+    if (videoRef.current) {
+      videoRef.current.pause();
+      if (videoRef.current.src) {
+        URL.revokeObjectURL(videoRef.current.src);
       }
-      visionRef.current = null;
+      videoRef.current = null;
     }
 
-    if (syntheticIntervalRef.current) {
-      clearInterval(syntheticIntervalRef.current);
-      syntheticIntervalRef.current = null;
-    }
-
-    if (screenCaptureIntervalRef.current) {
-      clearInterval(screenCaptureIntervalRef.current);
-      screenCaptureIntervalRef.current = null;
-    }
-
+    canvasRef.current = null;
     setRunning(false);
     setLastResult('');
+    setDeviceName('');
   }, []);
 
   // Cleanup on unmount
@@ -218,5 +196,5 @@ export function useVision({ apiKey, mode, videoFile, cameraFacing, canvasRef, on
     };
   }, [stop]);
 
-  return { running, error, lastResult, start, stop };
+  return { running, error, lastResult, deviceName, start, stop };
 }
