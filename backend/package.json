@@ -6,21 +6,23 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "agent": "tsx src/cli.ts"
+    "agent": "tsx src/cli.ts",
+    "browser": "tsx src/launch-browser.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "playwright": "^1.49.1",
+    "uuid": "^11.0.3",
     "ws": "^8.18.0",
-    "zod": "^3.24.1",
-    "dotenv": "^16.4.7",
-    "uuid": "^11.0.3"
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.2",
-    "@types/ws": "^8.5.13",
     "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

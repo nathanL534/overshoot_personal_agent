@@ -6,6 +6,7 @@ import { captureDomSnapshot } from './services/domSnapshot.js';
 import { waitForChange } from './services/changeDetector.js';
 import { planNextAction } from './services/planner.js';
 import { executeAction, detectCaptcha, isRiskyIntent, isAllowedDomain } from './services/executor.js';
+import { solveCaptcha, detectCaptchaType } from './services/captchaSolver.js';
 import { RunLogger, createRunId } from './services/logger.js';
 import { visionStore } from './services/visionStore.js';
 import { screenStreamer } from './services/screenStreamer.js';
@@ -42,23 +43,54 @@ function parseArgs(): CLIOptions {
   if (!options.goal) {
     console.error('Error: --goal is required');
     console.error('');
-    console.error('Usage:');
-    console.error('  # Connect to existing Chrome (recommended - aligns with Vision Bridge):');
-    console.error('  npm run agent -- --goal "your goal" --connect "http://localhost:9222"');
+    printUsage();
+    process.exit(1);
+  }
+
+  // Connect is required (no more launching separate browsers)
+  if (!options.connect) {
     console.error('');
-    console.error('  # Launch new Playwright browser:');
-    console.error('  npm run agent -- --goal "your goal" [--url "http://..."]');
+    console.error('='.repeat(60));
+    console.error('SETUP REQUIRED: Start Chrome with remote debugging');
+    console.error('='.repeat(60));
     console.error('');
-    console.error('Options:');
-    console.error('  --goal        (required) Task for the agent');
-    console.error('  --connect     CDP endpoint to connect to existing Chrome');
-    console.error('  --url         URL to navigate to (only for non-connect mode)');
-    console.error('  --allowlist   Comma-separated allowed domains');
-    console.error('  --maxSteps    Maximum steps (default: 40)');
+    console.error('The agent needs to connect to your existing browser.');
+    console.error('');
+    console.error('Step 1: Close Chrome completely, then restart with:');
+    console.error('');
+    console.error('  # Linux:');
+    console.error('  google-chrome --remote-debugging-port=9222');
+    console.error('');
+    console.error('  # macOS:');
+    console.error('  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222');
+    console.error('');
+    console.error('  # Windows:');
+    console.error('  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222');
+    console.error('');
+    console.error('Step 2: Navigate to the page you want the agent to work on');
+    console.error('');
+    console.error('Step 3: In Vision Bridge, pick that Chrome window');
+    console.error('');
+    console.error('Step 4: Run the agent with --connect:');
+    console.error('');
+    console.error(`  npm run agent -- --goal "${options.goal}" --connect "http://localhost:9222"`);
+    console.error('');
+    console.error('='.repeat(60));
     process.exit(1);
   }
 
   return options;
+}
+
+function printUsage() {
+  console.error('Usage:');
+  console.error('  npm run agent -- --goal "your goal" --connect "http://localhost:9222"');
+  console.error('');
+  console.error('Options:');
+  console.error('  --goal        (required) Task for the agent');
+  console.error('  --connect     (required) CDP endpoint (e.g., http://localhost:9222)');
+  console.error('  --allowlist   Comma-separated allowed domains');
+  console.error('  --maxSteps    Maximum steps (default: 40)');
 }
 
 // Readline for terminal prompts
@@ -111,126 +143,47 @@ async function connectToExistingBrowser(cdpEndpoint: string): Promise<{ browser:
   return { browser, page, context };
 }
 
-// Launch a new Playwright browser
-async function launchNewBrowser(): Promise<{ browser: Browser; page: Page; context: BrowserContext }> {
-  const browser = await chromium.launch({
-    headless: process.env.PLAYWRIGHT_HEADLESS === 'true',
-  });
-
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
-  });
-
-  const page = await context.newPage();
-
-  // Add visual indicator
-  await context.addInitScript(() => {
-    const style = document.createElement('style');
-    style.textContent = `
-      body { border: 4px solid #ff6b00 !important; }
-      body::before {
-        content: '🤖 BROWSER AGENT';
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        background: #ff6b00;
-        color: white;
-        padding: 4px 12px;
-        font-family: system-ui, sans-serif;
-        font-size: 12px;
-        font-weight: bold;
-        z-index: 999999;
-        text-align: center;
-      }
-      body { padding-top: 28px !important; }
-    `;
-    document.head.appendChild(style);
-  });
-
-  return { browser, page, context };
-}
-
 async function runAgent(options: CLIOptions) {
   const runId = createRunId();
   const logger = new RunLogger(runId);
   await logger.init();
 
-  const isConnectMode = !!options.connect;
-
   console.log('='.repeat(60));
   console.log('BROWSER AGENT');
   console.log('='.repeat(60));
-  console.log(`Mode: ${isConnectMode ? 'CONNECT to existing browser' : 'Launch new browser'}`);
   console.log(`Goal: ${options.goal}`);
-  if (isConnectMode) {
-    console.log(`CDP Endpoint: ${options.connect}`);
-  } else {
-    console.log(`URL: ${options.url || '(manual navigation)'}`);
-  }
+  console.log(`Connecting to: ${options.connect}`);
   console.log(`Allowlist: ${options.allowlist.join(', ')}`);
   console.log(`Max steps: ${options.maxSteps}`);
   console.log(`Run log: ${logger.getRunDir()}`);
   console.log('='.repeat(60));
   console.log('');
 
-  let browser: Browser;
-  let page: Page;
-  let context: BrowserContext;
-  let ownsBrowser = true; // Whether we should close the browser on exit
+  let browser: Browser | undefined;
+  let page: Page | undefined;
+  let context: BrowserContext | undefined;
 
   try {
-    if (isConnectMode) {
-      // Connect to existing browser
-      const connected = await connectToExistingBrowser(options.connect!);
-      browser = connected.browser;
-      page = connected.page;
-      context = connected.context;
-      ownsBrowser = false; // Don't close user's browser
+    // Connect to existing browser (the one Overshoot is watching)
+    const connected = await connectToExistingBrowser(options.connect!);
+    browser = connected.browser;
+    page = connected.page;
+    context = connected.context;
 
-      console.log('');
-      console.log('='.repeat(60));
-      console.log('CONNECTED TO YOUR BROWSER');
-      console.log('='.repeat(60));
-      console.log('');
-      console.log('The agent is now connected to your existing Chrome browser.');
-      console.log(`Current page: ${page.url()}`);
-      console.log('');
-      console.log('Make sure Vision Bridge is capturing this same Chrome window!');
-      console.log('');
-      console.log('Press Enter to start the agent...');
-      console.log('');
+    console.log('');
+    console.log('='.repeat(60));
+    console.log('CONNECTED TO YOUR BROWSER');
+    console.log('='.repeat(60));
+    console.log('');
+    console.log(`Current page: ${page.url()}`);
+    console.log('');
+    console.log('The agent will now control this page.');
+    console.log('Make sure Vision Bridge is capturing this same Chrome window!');
+    console.log('');
+    console.log('Press Enter to start the agent...');
+    console.log('');
 
-      await waitForUserInput('');
-    } else {
-      // Launch new browser
-      const launched = await launchNewBrowser();
-      browser = launched.browser;
-      page = launched.page;
-      context = launched.context;
-
-      // Handle navigation
-      if (options.url) {
-        log(0, `Navigating to ${options.url}`);
-        await page.goto(options.url, { waitUntil: 'domcontentloaded' });
-      } else {
-        log(0, 'Opening blank page for manual navigation');
-        await page.goto('about:blank');
-
-        console.log('');
-        console.log('='.repeat(60));
-        console.log('MANUAL NAVIGATION MODE');
-        console.log('='.repeat(60));
-        console.log('');
-        console.log('The Playwright browser is now open.');
-        console.log('Please navigate to the page where you want the agent to operate.');
-        console.log('');
-        console.log('When ready, press Enter to continue...');
-        console.log('');
-
-        await waitForUserInput('');
-      }
-    }
+    await waitForUserInput('');
 
     // Check domain allowlist for current page
     const currentUrl = page.url();
@@ -243,7 +196,6 @@ async function runAgent(options: CLIOptions) {
         const approved = await askUser(`Domain not in allowlist: ${hostname}. Approve?`);
         if (!approved) {
           console.log('Domain not approved. Exiting.');
-          if (ownsBrowser) await browser.close();
           rl.close();
           return;
         }
@@ -289,8 +241,21 @@ async function runAgent(options: CLIOptions) {
       // Check for CAPTCHA
       const hasCaptcha = await detectCaptcha(page);
       if (hasCaptcha) {
-        log(step, 'CAPTCHA DETECTED');
-        await waitForUserInput('CAPTCHA detected. Solve it manually, then press Enter: ');
+        const captchaType = await detectCaptchaType(page);
+        log(step, `CAPTCHA DETECTED (type: ${captchaType || 'unknown'})`);
+
+        // Try to solve automatically
+        log(step, 'Attempting automatic CAPTCHA solve...');
+        const solveResult = await solveCaptcha(page, process.env.CLAUDE_API_KEY);
+
+        if (solveResult.solved) {
+          log(step, `CAPTCHA solved automatically via ${solveResult.method}`);
+          continue;
+        }
+
+        // Automatic solve failed, fall back to manual
+        log(step, `Auto-solve failed: ${solveResult.error}`);
+        await waitForUserInput('CAPTCHA requires manual solving. Solve it, then press Enter: ');
         continue;
       }
 
@@ -433,9 +398,8 @@ async function runAgent(options: CLIOptions) {
     console.log(`Run completed. Logs: ${logger.getRunDir()}`);
     console.log('='.repeat(60));
 
-    if (ownsBrowser) {
-      await browser!.close();
-    } else {
+    // Never close the user's browser - they may want to keep using it
+    if (browser) {
       console.log('(Browser left open - you can continue using it)');
     }
     rl.close();

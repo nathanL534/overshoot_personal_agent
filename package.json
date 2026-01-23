@@ -8,6 +8,7 @@
     "backend": "cd backend && npm run dev",
     "frontend": "cd frontend && npm run dev",
     "agent": "cd backend && npm run agent --",
+    "browser": "cd backend && npm run browser",
     "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
     "build": "cd backend && npm run build && cd ../frontend && npm run build"
   },
